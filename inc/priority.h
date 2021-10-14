@@ -198,4 +198,38 @@ void LHD_updatePriorityOnHit(PriorityCache_t* cache, PriorityCache_Item_t* item)
 void LHD_updatePriorityOnEvict(PriorityCache_t* cache, PriorityCache_Item_t* item);
 PriorityCache_Item_t* LHD_minPriorityItem(PriorityCache_t* cache, PriorityCache_Item_t* item1, PriorityCache_Item_t* item2);
 
+
+
+/*********************************redis LFU priority interface************************************************/
+//use logarithmic counter of max 255
+#define REDIS_LFU_INIT_VAL 5
+#define REDIS_LFU_LOG_FACTOR 10
+#define REDIS_LFU_DECAY_TIME 1
+
+#define REDIS_FREQUENCY_BIT 8
+#define REDIS_TIME_BIT 16
+//the redis decay time use minute, this is not realistic value
+//in simulation, we will down scale this factor using
+// REDIS_TIME_GRANULARITY, which attempt to match real time with
+// simulation time.
+
+//number of request processed by redis in one minutes
+#define REDIS_TIME_GRANULARITY 1
+
+typedef struct _Redis_LFU_Priority_t
+{
+	unsigned access_time:REDIS_TIME_BIT; //24 bit as used in redis
+	unsigned freqCnt:REDIS_FREQUENCY_BIT;
+} Redis_LFU_Priority_t;
+
+
+
+void* Redis_LFU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item);
+void Redis_LFU_updatePriorityOnHit(PriorityCache_t* cache, PriorityCache_Item_t* item);
+void Redis_LFU_updatePriorityOnEvict(PriorityCache_t* cache, PriorityCache_Item_t* item);
+
+PriorityCache_Item_t* Redis_LFU_minPriorityItem(PriorityCache_t* cache, PriorityCache_Item_t* item1, PriorityCache_Item_t* item2);
+
+
+
 #endif /*JY_PRIORITY_H*/

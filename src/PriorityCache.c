@@ -211,7 +211,7 @@ uint8_t setItem(PriorityCache_t* cache, uint64_t key, uint64_t size) {
     }
     
     item = createItem(key, size, cache->currNum);
-    item->priority = cache->createPriority(cache, item);
+    cache->createPriority(cache, item);
     addItem(cache, item); //cache currNum (index) increment++
 
     return SET_SUCESS;

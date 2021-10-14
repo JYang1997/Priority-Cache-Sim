@@ -38,3 +38,4 @@ $(DEPDIR)/%.o: $(DEPDIR)/%.c
 clean:
 	rm -f priority_cache
 
+	rm -f $(DEPDIR)/*.o $(SRCSDIR)/*.o

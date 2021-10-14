@@ -1,5 +1,7 @@
 #include "PriorityCache.h"
 #include "hist.h"
+#include <math.h>
+#include "pcg_variants.h"
 #include "uthash.h"
 #include "priority.h"
 #include <assert.h>
@@ -12,6 +14,7 @@ void* HC_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	p->refCount = 0;
 	p->enterTime = cache->clock;
 
+	item->priority = p;
 	return p;
 } 
 
@@ -81,6 +84,8 @@ void* PHC_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	}
 	
 	p->lastAccessTime = cache->clock;
+
+	item->priority = p;
 	return p;
 } 
 
@@ -144,6 +149,9 @@ void* LHD_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	p->lastAccessTime = cache->clock;
 	addToHist(gd->hitHist, COLDMISS);
 	addToHist(gd->lifeTimeHist, COLDMISS);
+
+
+	item->priority = p;
 	return p;
 } 
 
@@ -247,6 +255,9 @@ PriorityCache_Item_t* LHD_minPriorityItem(PriorityCache_t* cache, PriorityCache_
 void* LRU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	LRU_Priority_t* p = malloc(sizeof(LRU_Priority_t));
 	p->lastAccessTime = cache->clock;
+
+
+	item->priority = p;
 	return p;
 } 
 
@@ -281,6 +292,9 @@ PriorityCache_Item_t* LRU_minPriorityItem(PriorityCache_t* cache, PriorityCache_
 void* MRU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	MRU_Priority_t* p = malloc(sizeof(MRU_Priority_t));
 	p->lastAccessTime = cache->clock;
+
+
+	item->priority = p;
 	return p;
 } 
 
@@ -314,11 +328,15 @@ void* In_Cache_LFU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* it
 	In_Cache_LFU_Priority_t* p = malloc(sizeof(In_Cache_LFU_Priority_t));
 	p->freqCnt = 1;
 	p->lastAccessTime = cache->clock;
+
+
+	item->priority = p;
 	return p;
 } 
 
 void In_Cache_LFU_updatePriorityOnHit(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	In_Cache_LFU_Priority_t* p = (In_Cache_LFU_Priority_t*)(item->priority);
+	p->lastAccessTime = cache->clock;
 	p->freqCnt +=1;
 }
 
@@ -336,7 +354,7 @@ PriorityCache_Item_t* In_Cache_LFU_minPriorityItem(PriorityCache_t* cache, Prior
 	In_Cache_LFU_Priority_t* pp2 = (In_Cache_LFU_Priority_t*)(item2->priority);
 	uint64_t p1 = pp1->freqCnt;
 	uint64_t p2 = pp2->freqCnt;
-	if (p1 == p2) return pp1->lastAccessTime <= pp2->lastAccessTime ? item1 : item2;
+	if (p1 == p2) return pp1->lastAccessTime > pp2->lastAccessTime ? item1 : item2;
 	return p1 < p2 ? item1 : item2;
 }
 
@@ -376,11 +394,13 @@ void* Perfect_LFU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* ite
 	}
 	p->lastAccessTime = cache->clock;
 
+	item->priority = p;
 	return p;
 } 
 
 void Perfect_LFU_updatePriorityOnHit(PriorityCache_t* cache, PriorityCache_Item_t* item) {
 	Perfect_LFU_Priority_t* p = (Perfect_LFU_Priority_t*)(item->priority);
+	p->lastAccessTime = cache->clock;
 	p->freqCnt +=1;
 	// printf("up%ld\n", p->freqCnt);
 }
@@ -409,6 +429,97 @@ PriorityCache_Item_t* Perfect_LFU_minPriorityItem(PriorityCache_t* cache, Priori
 	Perfect_LFU_Priority_t* pp2 = (Perfect_LFU_Priority_t*)(item2->priority);
 	uint64_t p1 = pp1->freqCnt;
 	uint64_t p2 = pp2->freqCnt;
-	if (p1 == p2) return pp1->lastAccessTime <= pp2->lastAccessTime ? item1 : item2;
+	if (p1 == p2) return pp1->lastAccessTime > pp2->lastAccessTime ? item1 : item2;
 	return p1 <= p2 ? item1 : item2;
 }
+
+
+/*********************************redis LFU priority interface************************************************/
+//logarithmic counter
+void* Redis_LFU_initPriority(PriorityCache_t* cache, PriorityCache_Item_t* item){
+	Redis_LFU_Priority_t* p = malloc(sizeof(Redis_LFU_Priority_t));
+	
+	//redis original
+	// p->access_time = (ustime()/1000000)/60 & (1<<REDIS_TIME_BIT);
+
+	//change to logical
+	p->access_time = (cache->clock/(REDIS_TIME_GRANULARITY)) & ((1 << REDIS_TIME_BIT)-1);
+
+	p->freqCnt = REDIS_LFU_INIT_VAL;
+
+
+
+	item->priority = p;
+
+	return p;
+}
+
+
+//redis priority internal helper
+static unsigned long Redis_LFUDecrAndReturn(PriorityCache_t* cache, PriorityCache_Item_t* item) {
+	
+	unsigned long ldt = ((Redis_LFU_Priority_t*)(item->priority))->access_time;
+	unsigned long counter = ((Redis_LFU_Priority_t*)(item->priority))->freqCnt;
+
+
+	//redis original
+	//unsigned long now = (ustime()/1000000)/60 & 65536 ;
+	//change to logical
+	unsigned long now = (cache->clock/(REDIS_TIME_GRANULARITY)) & ((1 << REDIS_TIME_BIT)-1);
+
+	unsigned long timeElapsed = now >= ldt ? now-ldt : ((1 << REDIS_TIME_BIT)-1)-ldt+now;
+
+	unsigned long num_periods = REDIS_LFU_DECAY_TIME ? timeElapsed / REDIS_LFU_DECAY_TIME : 0;
+
+	// if (num_periods)
+    counter = (num_periods > counter) ? 0 : counter - num_periods;
+
+    return counter;
+}
+
+//logic:
+// on hit, decrement counter based on time lapsed //based on access time
+//         then increment counter
+//         lastly store incremented counter and currrent time 
+
+void Redis_LFU_updatePriorityOnHit(PriorityCache_t* cache, PriorityCache_Item_t* item){
+	
+	unsigned long now = (cache->clock/(REDIS_TIME_GRANULARITY)) & ((1 << REDIS_TIME_BIT)-1);
+
+    unsigned long counter = Redis_LFUDecrAndReturn(cache, item);
+    //decrement complete, now start increment
+    
+	double r = ldexp(pcg64_random(), -64);
+	double baseval = counter - REDIS_LFU_INIT_VAL;
+	if (baseval < 0) baseval = 0;
+	double p = 1.0/(baseval*REDIS_LFU_LOG_FACTOR+1);
+    if (r < p) counter++;
+
+    unsigned long long maxCnt = (1 << REDIS_FREQUENCY_BIT)-1;
+	((Redis_LFU_Priority_t*)(item->priority))->freqCnt = counter > maxCnt ? maxCnt : counter;
+    ((Redis_LFU_Priority_t*)(item->priority))->access_time = now;
+}
+void Redis_LFU_updatePriorityOnEvict(PriorityCache_t* cache, PriorityCache_Item_t* item){
+
+}
+
+PriorityCache_Item_t* Redis_LFU_minPriorityItem(PriorityCache_t* cache, PriorityCache_Item_t* item1, PriorityCache_Item_t* item2){
+
+	unsigned long freqCnt1 = Redis_LFUDecrAndReturn(cache, item1);
+	unsigned long freqCnt2 = Redis_LFUDecrAndReturn(cache, item2);
+
+	unsigned long long maxCnt = (1 << REDIS_FREQUENCY_BIT)-1;
+
+	assert(freqCnt1 <= maxCnt && freqCnt2 <= maxCnt);
+	
+	unsigned long t1 = ((Redis_LFU_Priority_t*)(item1->priority))->access_time;
+	unsigned long t2 = ((Redis_LFU_Priority_t*)(item2->priority))->access_time;
+
+	if (freqCnt1 == freqCnt2) return t1 <= t2 ? item2 : item1;
+	return freqCnt1 < freqCnt2 ? item1 : item2;
+
+
+}
+
+
+
